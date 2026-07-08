@@ -1,0 +1,24 @@
+{
+  "name": "cash-hero-teacher",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cash Hero - Teacher live lesson panel",
+  "scripts": {
+    "install-client": "npm install --prefix client",
+    "build": "npm run install-client && npm run build --prefix client",
+    "heroku-postbuild": "npm run build",
+    "start": "node server/index.js",
+    "dev:server": "node server/index.js",
+    "dev:client": "npm run dev --prefix client",
+    "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\""
+  },
+  "engines": {
+    "node": "20.x"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
