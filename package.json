@@ -4,7 +4,7 @@
   "private": true,
   "description": "Cash Hero - Teacher live lesson panel",
   "scripts": {
-    "install-client": "npm install --prefix client",
+    "install-client": "npm install --prefix client --include=dev",
     "build": "npm run install-client && npm run build --prefix client",
     "heroku-postbuild": "npm run build",
     "start": "node server/index.js",
