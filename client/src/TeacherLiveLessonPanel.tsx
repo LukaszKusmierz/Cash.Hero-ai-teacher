@@ -4,10 +4,10 @@ import {
   FileText, GraduationCap, Loader2, LogOut, Play, Radio, RefreshCw, Users, Wallet,
 } from "lucide-react";
 import {
-  createRoom, getCurrentUser, getDashboard, getRoomHistory, login, logout, registerTeacher,
+  AUTH_EXPIRED_EVENT, createRoom, getCurrentUser, getDashboard, getRoomHistory, login, logout, registerTeacher,
   type Dashboard, type HistoryAnalysis, type HistoryEvent, type Participant,
 } from "./api";
-import { getStoredAuth, storeAuth, type AuthUser } from "./auth";
+import { clearLegacyAuthStorage, type AuthUser } from "./auth";
 
 const ROOM_STORAGE_KEY = "cashhero_teacher_room";
 const POLL_INTERVAL = 4000;
@@ -55,6 +55,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [rememberMe, setRememberMe] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -63,9 +64,8 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
     setBusy(true); setError("");
     try {
       const user = mode === "login"
-        ? await login({ username, password })
+        ? await login({ username, password, remember_me: rememberMe })
         : await registerTeacher({ username, password, display_name: displayName });
-      storeAuth(user);
       onAuthenticated(user);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Nie udało się zalogować.");
@@ -82,6 +82,10 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
       {mode === "register" && <Field label="Nazwa wyświetlana" value={displayName} onChange={setDisplayName} autoComplete="name" />}
       <Field label="Login" value={username} onChange={setUsername} autoComplete="username" />
       <Field label="Hasło" value={password} onChange={setPassword} type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} />
+      {mode === "login" && <label className="mb-4 flex items-center gap-2 text-sm text-slate-600">
+        <input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} />
+        Zapamiętaj mnie na 30 dni
+      </label>}
       <button disabled={busy} className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 py-3 font-semibold text-white hover:bg-indigo-700 disabled:opacity-60">
         {busy && <Loader2 className="h-4 w-4 animate-spin" />}{mode === "login" ? "Zaloguj się" : "Utwórz konto"}
       </button>
@@ -182,7 +186,7 @@ function Reports({ dashboard, history, onBack }: { dashboard: Dashboard; history
 }
 
 export default function TeacherLiveLessonPanel() {
-  const [user, setUser] = useState<AuthUser | null>(() => getStoredAuth());
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [history, setHistory] = useState<HistoryAnalysis | null>(null);
@@ -192,13 +196,23 @@ export default function TeacherLiveLessonPanel() {
 
   useEffect(() => {
     const bootstrap = async () => {
-      const stored = getStoredAuth();
-      if (!stored?.token) { setUser(null); setAuthReady(true); return; }
-      try { const current = await getCurrentUser(); const authenticated = { ...current, token: stored.token }; storeAuth(authenticated); setUser(authenticated); }
-      catch { storeAuth(null); setUser(null); }
+      clearLegacyAuthStorage();
+      try { setUser(await getCurrentUser()); }
+      catch { setUser(null); }
       finally { setAuthReady(true); }
     };
     void bootstrap();
+  }, []);
+
+  useEffect(() => {
+    const handleAuthExpired = () => {
+      setUser(null);
+      setDashboard(null);
+      setHistory(null);
+      setStage("waiting");
+    };
+    window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
   }, []);
 
   const refresh = useCallback(async (quiet = false) => {
@@ -225,7 +239,19 @@ export default function TeacherLiveLessonPanel() {
     catch (reason) { setError(reason instanceof Error ? reason.message : "Nie udało się utworzyć pokoju."); }
     finally { setBusy(false); }
   };
-  const handleLogout = async () => { try { await logout(); } catch { /* sesja lokalna też zostanie wyczyszczona */ } storeAuth(null); localStorage.removeItem(ROOM_STORAGE_KEY); setUser(null); setDashboard(null); };
+  const handleLogout = async () => {
+    setError("");
+    try {
+      await logout();
+      localStorage.removeItem(ROOM_STORAGE_KEY);
+      setUser(null);
+      setDashboard(null);
+      setHistory(null);
+      setStage("waiting");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Nie udało się wylogować.");
+    }
+  };
   const handleNewRoom = () => { localStorage.removeItem(ROOM_STORAGE_KEY); setDashboard(null); setHistory(null); setStage("waiting"); setError(""); };
 
   if (!authReady) return <div className="flex min-h-screen items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-indigo-600" /></div>;

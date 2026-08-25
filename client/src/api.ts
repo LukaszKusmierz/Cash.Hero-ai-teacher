@@ -1,24 +1,59 @@
-import { getAuthToken, storeAuth, type AuthUser } from "./auth";
+import type { AuthUser } from "./auth";
 
-const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:8080").replace(/\/$/, "");
+const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:3000").replace(/\/$/, "");
+export const AUTH_EXPIRED_EVENT = "cashhero:auth-expired";
+const CSRF_HEADER = "X-XSRF-TOKEN";
+const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+let csrfToken: string | null = null;
+let csrfTokenRequest: Promise<string> | null = null;
 
 type ApiErrorBody = { error?: string; details?: Record<string, string> };
 
+async function getCsrfToken(): Promise<string> {
+  if (csrfToken) return csrfToken;
+  if (!csrfTokenRequest) {
+    csrfTokenRequest = fetch(`${API_URL}/auth/csrf`, { credentials: "include" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`Nie można pobrać tokenu CSRF (${response.status}).`);
+        const body = await response.json() as { token?: string };
+        if (!body.token) throw new Error("Backend nie zwrócił tokenu CSRF.");
+        csrfToken = body.token;
+        return body.token;
+      })
+      .finally(() => {
+        csrfTokenRequest = null;
+      });
+  }
+  return csrfTokenRequest;
+}
+
+function clearCsrfToken(): void {
+  csrfToken = null;
+}
+
 async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  const token = getAuthToken();
+  const method = (init.method || "GET").toUpperCase();
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (UNSAFE_METHODS.has(method)) headers.set(CSRF_HEADER, await getCsrfToken());
 
   let response: Response;
+  const send = () => fetch(`${API_URL}${path}`, { ...init, headers, credentials: "include" });
   try {
-    response = await fetch(`${API_URL}${path}`, { ...init, headers });
+    response = await send();
+    if (response.status === 403 && UNSAFE_METHODS.has(method)) {
+      clearCsrfToken();
+      headers.set(CSRF_HEADER, await getCsrfToken());
+      response = await send();
+    }
   } catch {
     throw new Error(`Nie można połączyć się z backendem (${API_URL}).`);
   }
 
   const text = await response.text();
-  if (response.status === 401) storeAuth(null);
+  if (response.status === 401 && !path.startsWith("/auth/login")) {
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+  }
   if (!response.ok) {
     let message = text || `Błąd API (${response.status}).`;
     try {
@@ -58,14 +93,21 @@ export type HistoryAnalysis = {
   events: HistoryEvent[];
 };
 
-export function login(payload: { username: string; password: string }) {
-  return apiFetch<AuthUser>("/auth/login", { method: "POST", body: JSON.stringify(payload) });
+export async function login(payload: { username: string; password: string; remember_me?: boolean }) {
+  const user = await apiFetch<AuthUser>("/auth/login", { method: "POST", body: JSON.stringify(payload) });
+  clearCsrfToken();
+  return user;
 }
-export function registerTeacher(payload: { username: string; password: string; display_name: string }) {
-  return apiFetch<AuthUser>("/auth/register/teacher", { method: "POST", body: JSON.stringify(payload) });
+export async function registerTeacher(payload: { username: string; password: string; display_name: string }) {
+  const user = await apiFetch<AuthUser>("/auth/register/teacher", { method: "POST", body: JSON.stringify(payload) });
+  clearCsrfToken();
+  return user;
 }
 export function getCurrentUser() { return apiFetch<AuthUser>("/auth/me"); }
-export function logout() { return apiFetch<void>("/auth/logout", { method: "POST" }); }
+export async function logout() {
+  await apiFetch<void>("/auth/logout", { method: "POST" });
+  clearCsrfToken();
+}
 export function createRoom() { return apiFetch<Room>("/rooms", { method: "POST" }); }
 export function getDashboard(roomId: string) { return apiFetch<Dashboard>(`/teacher/rooms/${roomId}/dashboard`); }
 export function getRoomHistory(roomId: string) { return apiFetch<HistoryAnalysis>(`/rooms/${roomId}/history/analysis`); }

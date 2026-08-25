@@ -2,7 +2,9 @@ const express = require("express");
 const path = require("path");
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+// Port 3001 is reserved for the student Vite app during local development.
+// Heroku and other production environments still provide their own PORT.
+const PORT = process.env.PORT || 3002;
 const clientDist = path.join(__dirname, "..", "client", "dist");
 
 app.use(express.static(clientDist));
