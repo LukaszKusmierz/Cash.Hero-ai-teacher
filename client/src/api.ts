@@ -31,6 +31,13 @@ function clearCsrfToken(): void {
   csrfToken = null;
 }
 
+function requireTeacher(user: AuthUser): AuthUser {
+  if (user.role !== "TEACHER") {
+    throw new Error("To konto ucznia. Zaloguj się kontem nauczyciela.");
+  }
+  return user;
+}
+
 async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   const method = (init.method || "GET").toUpperCase();
@@ -96,18 +103,29 @@ export type HistoryAnalysis = {
 export async function login(payload: { username: string; password: string; remember_me?: boolean }) {
   const user = await apiFetch<AuthUser>("/auth/login", { method: "POST", body: JSON.stringify(payload) });
   clearCsrfToken();
-  return user;
+  return requireTeacher(user);
 }
-export async function registerTeacher(payload: { username: string; password: string; display_name: string }) {
-  const user = await apiFetch<AuthUser>("/auth/register/teacher", { method: "POST", body: JSON.stringify(payload) });
+export async function registerTeacher(payload: {
+  username: string;
+  password: string;
+  display_name: string;
+  invitation_token: string;
+}) {
+  const user = await apiFetch<AuthUser>("/auth/teacher-invitations/accept", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
   clearCsrfToken();
-  return user;
+  return requireTeacher(user);
 }
-export function getCurrentUser() { return apiFetch<AuthUser>("/auth/me"); }
+export function getCurrentUser() { return apiFetch<AuthUser>("/auth/me").then(requireTeacher); }
 export async function logout() {
   await apiFetch<void>("/auth/logout", { method: "POST" });
   clearCsrfToken();
 }
 export function createRoom() { return apiFetch<Room>("/rooms", { method: "POST" }); }
+export function createTeam(payload: { room_id: string; name: string }) {
+  return apiFetch<Team>("/teams", { method: "POST", body: JSON.stringify(payload) });
+}
 export function getDashboard(roomId: string) { return apiFetch<Dashboard>(`/teacher/rooms/${roomId}/dashboard`); }
 export function getRoomHistory(roomId: string) { return apiFetch<HistoryAnalysis>(`/rooms/${roomId}/history/analysis`); }
