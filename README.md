@@ -31,6 +31,13 @@ token z `GET /auth/csrf` i wysyłają go w nagłówku `X-XSRF-TOKEN` razem z coo
 Obsługiwane dane lekcji pochodzą z endpointów pokojów, dashboardu nauczyciela
 i historii gry; panel nie generuje uczestników ani wyników demonstracyjnych.
 
+Rejestracja nauczyciela wymaga jednorazowego kodu zaproszenia i korzysta z
+`POST /auth/teacher-invitations/accept`. Jeśli administrator przypisał zaproszenie
+do adresu e-mail, ten sam adres trzeba podać w formularzu rejestracji. Konto
+`ADMIN` otwiera w tym module panel tworzenia i unieważniania zaproszeń oraz listę
+powiadomień o utworzonych kontach nauczycieli. Surowy kod zaproszenia jest
+wyświetlany tylko bezpośrednio po utworzeniu i nie jest zapisywany w adresie URL.
+
 W produkcji panel i API muszą działać w tym samym kontekście site, np.
 `teacher.cashhero.pl` oraz `api.cashhero.pl`, albo API musi być wystawione przez
 reverse proxy panelu. Połączenie domen z różnych site (np. `herokuapp.com` i

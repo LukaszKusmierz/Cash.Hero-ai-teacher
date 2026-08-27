@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import {
-  Activity, AlertCircle, ArrowLeft, BarChart3, Check, Clock, Copy, DoorOpen,
-  FileText, GraduationCap, Loader2, LogOut, Play, Plus, Radio, RefreshCw, Users, Wallet,
+  Activity, AlertCircle, ArrowLeft, BarChart3, Bell, Check, Clock, Copy, DoorOpen,
+  FileText, GraduationCap, Loader2, LogOut, Play, Plus, Radio, RefreshCw, ShieldCheck, Trash2, Users, Wallet,
 } from "lucide-react";
 import {
-  AUTH_EXPIRED_EVENT, createRoom, createTeam, getCurrentUser, getDashboard, getRoomHistory, login, logout, registerTeacher,
-  type Dashboard, type HistoryAnalysis, type HistoryEvent, type Participant,
+  AUTH_EXPIRED_EVENT, createRoom, createTeacherInvitation, createTeam, getAdminNotifications, getCurrentUser,
+  getDashboard, getRoomHistory, login, logout, registerTeacher, revokeTeacherInvitation,
+  type AdminNotification, type Dashboard, type HistoryAnalysis, type HistoryEvent, type Participant,
+  type TeacherInvitation,
 } from "./api";
 import { clearLegacyAuthStorage, type AuthUser } from "./auth";
 
@@ -55,6 +57,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [email, setEmail] = useState("");
   const [invitationToken, setInvitationToken] = useState("");
   const [rememberMe, setRememberMe] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -70,6 +73,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
             username,
             password,
             display_name: displayName,
+            email: email.trim() || undefined,
             invitation_token: invitationToken.trim(),
           });
       onAuthenticated(user);
@@ -86,6 +90,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
       </div>
       {error && <Notice>{error}</Notice>}
       {mode === "register" && <Field label="Nazwa wyświetlana" value={displayName} onChange={setDisplayName} autoComplete="name" />}
+      {mode === "register" && <Field label="E-mail przypisany do zaproszenia (opcjonalnie)" value={email} onChange={setEmail} type="email" autoComplete="email" required={false} />}
       {mode === "register" && <Field label="Jednorazowy kod zaproszenia" value={invitationToken} onChange={setInvitationToken} autoComplete="one-time-code" />}
       <Field label="Login" value={username} onChange={setUsername} autoComplete="username" />
       <Field label="Hasło" value={password} onChange={setPassword} type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} />
@@ -103,9 +108,9 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
   </main>;
 }
 
-function Field({ label, value, onChange, type = "text", autoComplete }: { label: string; value: string; onChange: (value: string) => void; type?: string; autoComplete?: string }) {
+function Field({ label, value, onChange, type = "text", autoComplete, required = true }: { label: string; value: string; onChange: (value: string) => void; type?: string; autoComplete?: string; required?: boolean }) {
   return <label className="mb-4 block text-sm font-semibold text-slate-700">{label}
-    <input required minLength={type === "password" ? 6 : 3} value={value} type={type} autoComplete={autoComplete} onChange={(event) => onChange(event.target.value)} className="mt-1.5 w-full rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100" />
+    <input required={required} minLength={required ? (type === "password" ? 6 : 3) : undefined} value={value} type={type} autoComplete={autoComplete} onChange={(event) => onChange(event.target.value)} className="mt-1.5 w-full rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100" />
   </label>;
 }
 
@@ -116,10 +121,81 @@ function Notice({ children }: { children: string }) {
 function Header({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
   return <header className="border-b border-slate-100 bg-white">
     <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 md:px-8">
-      <div className="flex items-center gap-2 font-bold text-slate-900"><GraduationCap className="text-indigo-600" />Cash Hero <span className="font-normal text-slate-400">Nauczyciel</span></div>
+      <div className="flex items-center gap-2 font-bold text-slate-900"><GraduationCap className="text-indigo-600" />Cash Hero <span className="font-normal text-slate-400">{user.role === "ADMIN" ? "Administrator" : "Nauczyciel"}</span></div>
       <div className="flex items-center gap-3"><span className="hidden text-sm text-slate-500 sm:inline">{user.display_name || user.username}</span><button onClick={onLogout} className="flex items-center gap-1.5 rounded-lg bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-200"><LogOut className="h-3.5 w-3.5" /> Wyloguj</button></div>
     </div>
   </header>;
+}
+
+function AdminPanel({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
+  const [email, setEmail] = useState("");
+  const [invitation, setInvitation] = useState<TeacherInvitation | null>(null);
+  const [notifications, setNotifications] = useState<AdminNotification[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const refreshNotifications = useCallback(async () => {
+    try {
+      setNotifications(await getAdminNotifications());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Nie udało się pobrać powiadomień.");
+    }
+  }, []);
+
+  useEffect(() => { void refreshNotifications(); }, [refreshNotifications]);
+
+  const createInvitation = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true); setError(""); setInvitation(null);
+    try {
+      setInvitation(await createTeacherInvitation(email));
+      setEmail("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Nie udało się utworzyć zaproszenia.");
+    } finally { setBusy(false); }
+  };
+
+  const revokeInvitation = async () => {
+    if (!invitation) return;
+    setBusy(true); setError("");
+    try {
+      await revokeTeacherInvitation(invitation.id);
+      setInvitation(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Nie udało się unieważnić zaproszenia.");
+    } finally { setBusy(false); }
+  };
+
+  const copyToken = async () => {
+    if (!invitation) return;
+    try { await navigator.clipboard.writeText(invitation.invitation_token); }
+    catch { setError("Nie udało się skopiować kodu."); }
+  };
+
+  return <div className="min-h-screen bg-slate-50">
+    <Header user={user} onLogout={onLogout} />
+    <main className="mx-auto grid max-w-6xl gap-6 px-4 py-8 md:px-8 lg:grid-cols-2">
+      <section className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
+        <h1 className="flex items-center gap-2 text-xl font-bold text-slate-900"><ShieldCheck className="text-indigo-600" />Zaproszenia nauczycieli</h1>
+        <p className="mt-2 text-sm text-slate-500">Kod zostanie pokazany tylko raz. Przekaż go nauczycielowi bez umieszczania w adresie URL.</p>
+        {error && <div className="mt-4"><Notice>{error}</Notice></div>}
+        <form onSubmit={createInvitation} className="mt-5">
+          <Field label="E-mail nauczyciela (opcjonalnie)" value={email} onChange={setEmail} type="email" autoComplete="email" required={false} />
+          <button disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 py-3 font-semibold text-white disabled:opacity-60">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Utwórz zaproszenie</button>
+        </form>
+        {invitation && <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <p className="text-xs font-semibold uppercase text-amber-700">Kod jednorazowy</p>
+          <code className="mt-2 block break-all rounded-lg bg-white p-3 text-sm text-slate-800">{invitation.invitation_token}</code>
+          <p className="mt-2 text-xs text-slate-500">Ważny do {formatDate(invitation.expires_at)}{invitation.email ? ` · ${invitation.email}` : ""}</p>
+          <div className="mt-3 flex gap-2"><button type="button" onClick={copyToken} className="flex items-center gap-1 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-indigo-700"><Copy className="h-4 w-4" /> Kopiuj</button><button type="button" onClick={revokeInvitation} disabled={busy} className="flex items-center gap-1 rounded-lg bg-red-100 px-3 py-2 text-sm font-semibold text-red-700"><Trash2 className="h-4 w-4" /> Unieważnij</button></div>
+        </div>}
+      </section>
+      <section className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
+        <div className="flex items-center justify-between"><h2 className="flex items-center gap-2 text-xl font-bold text-slate-900"><Bell className="text-indigo-600" />Powiadomienia</h2><button onClick={() => void refreshNotifications()} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100" aria-label="Odśwież powiadomienia"><RefreshCw className="h-4 w-4" /></button></div>
+        <div className="mt-5 space-y-3">{notifications.length === 0 ? <p className="text-sm text-slate-400">Brak powiadomień.</p> : notifications.map((notification) => <article key={notification.id} className="rounded-xl border border-slate-100 p-4"><p className="text-sm font-semibold text-slate-800">{notification.message}</p><time className="mt-1 block text-xs text-slate-400">{formatDate(notification.created_at)}</time></article>)}</div>
+      </section>
+    </main>
+  </div>;
 }
 
 function NoRoom({ onCreate, busy, error }: { onCreate: () => void; busy: boolean; error: string }) {
@@ -250,7 +326,7 @@ export default function TeacherLiveLessonPanel() {
 
   const refresh = useCallback(async (quiet = false) => {
     const roomId = localStorage.getItem(ROOM_STORAGE_KEY);
-    if (!roomId || !user) return;
+    if (!roomId || user?.role !== "TEACHER") return;
     if (!quiet) setBusy(true);
     try {
       const [nextDashboard, nextHistory] = await Promise.all([getDashboard(roomId), getRoomHistory(roomId)]);
@@ -259,7 +335,7 @@ export default function TeacherLiveLessonPanel() {
     finally { if (!quiet) setBusy(false); }
   }, [user]);
 
-  useEffect(() => { if (user) void refresh(); }, [user, refresh]);
+  useEffect(() => { if (user?.role === "TEACHER") void refresh(); }, [user, refresh]);
   useEffect(() => {
     if (!user || !dashboard || stage === "reports") return;
     const interval = window.setInterval(() => void refresh(true), POLL_INTERVAL);
@@ -294,5 +370,6 @@ export default function TeacherLiveLessonPanel() {
 
   if (!authReady) return <div className="flex min-h-screen items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-indigo-600" /></div>;
   if (!user) return <AuthScreen onAuthenticated={(next) => { setUser(next); setAuthReady(true); }} />;
+  if (user.role === "ADMIN") return <AdminPanel user={user} onLogout={handleLogout} />;
   return <div className="min-h-screen bg-slate-50"><Header user={user} onLogout={handleLogout} />{!dashboard ? <NoRoom onCreate={handleCreate} busy={busy} error={error} /> : stage === "waiting" ? <WaitingRoom dashboard={dashboard} error={error} refreshing={busy} onRefresh={() => void refresh()} onStart={() => setStage("live")} onNewRoom={handleNewRoom} onCreateTeam={handleCreateTeam} /> : stage === "live" ? <LiveDashboard dashboard={dashboard} history={history} error={error} onRefresh={() => void refresh()} onReports={() => setStage("reports")} onBack={() => setStage("waiting")} /> : <Reports dashboard={dashboard} history={history} onBack={() => setStage("live")} />}</div>;
 }

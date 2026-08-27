@@ -31,8 +31,8 @@ function clearCsrfToken(): void {
   csrfToken = null;
 }
 
-function requireTeacher(user: AuthUser): AuthUser {
-  if (user.role !== "TEACHER") {
+function requireStaff(user: AuthUser): AuthUser {
+  if (user.role !== "TEACHER" && user.role !== "ADMIN") {
     throw new Error("To konto ucznia. Zaloguj się kontem nauczyciela.");
   }
   return user;
@@ -45,14 +45,8 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (UNSAFE_METHODS.has(method)) headers.set(CSRF_HEADER, await getCsrfToken());
 
   let response: Response;
-  const send = () => fetch(`${API_URL}${path}`, { ...init, headers, credentials: "include" });
   try {
-    response = await send();
-    if (response.status === 403 && UNSAFE_METHODS.has(method)) {
-      clearCsrfToken();
-      headers.set(CSRF_HEADER, await getCsrfToken());
-      response = await send();
-    }
+    response = await fetch(`${API_URL}${path}`, { ...init, headers, credentials: "include" });
   } catch {
     throw new Error(`Nie można połączyć się z backendem (${API_URL}).`);
   }
@@ -103,12 +97,13 @@ export type HistoryAnalysis = {
 export async function login(payload: { username: string; password: string; remember_me?: boolean }) {
   const user = await apiFetch<AuthUser>("/auth/login", { method: "POST", body: JSON.stringify(payload) });
   clearCsrfToken();
-  return requireTeacher(user);
+  return requireStaff(user);
 }
 export async function registerTeacher(payload: {
   username: string;
   password: string;
   display_name: string;
+  email?: string;
   invitation_token: string;
 }) {
   const user = await apiFetch<AuthUser>("/auth/teacher-invitations/accept", {
@@ -116,9 +111,9 @@ export async function registerTeacher(payload: {
     body: JSON.stringify(payload),
   });
   clearCsrfToken();
-  return requireTeacher(user);
+  return requireStaff(user);
 }
-export function getCurrentUser() { return apiFetch<AuthUser>("/auth/me").then(requireTeacher); }
+export function getCurrentUser() { return apiFetch<AuthUser>("/auth/me").then(requireStaff); }
 export async function logout() {
   await apiFetch<void>("/auth/logout", { method: "POST" });
   clearCsrfToken();
@@ -129,3 +124,35 @@ export function createTeam(payload: { room_id: string; name: string }) {
 }
 export function getDashboard(roomId: string) { return apiFetch<Dashboard>(`/teacher/rooms/${roomId}/dashboard`); }
 export function getRoomHistory(roomId: string) { return apiFetch<HistoryAnalysis>(`/rooms/${roomId}/history/analysis`); }
+
+export type TeacherInvitation = {
+  id: string;
+  invitation_token: string;
+  email: string | null;
+  created_at: string;
+  expires_at: string;
+};
+
+export type AdminNotification = {
+  id: string;
+  notification_type: string;
+  message: string;
+  related_user_id: string | null;
+  created_at: string;
+  read_at: string | null;
+};
+
+export function createTeacherInvitation(email?: string) {
+  return apiFetch<TeacherInvitation>("/admin/teacher-invitations", {
+    method: "POST",
+    body: JSON.stringify({ email: email?.trim() || null }),
+  });
+}
+
+export function revokeTeacherInvitation(invitationId: string) {
+  return apiFetch<void>(`/admin/teacher-invitations/${encodeURIComponent(invitationId)}`, { method: "DELETE" });
+}
+
+export function getAdminNotifications() {
+  return apiFetch<AdminNotification[]>("/admin/notifications");
+}
