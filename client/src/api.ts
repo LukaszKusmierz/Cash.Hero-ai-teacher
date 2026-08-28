@@ -7,7 +7,7 @@ const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 let csrfToken: string | null = null;
 let csrfTokenRequest: Promise<string> | null = null;
 
-type ApiErrorBody = { error?: string; details?: Record<string, string> };
+type ApiErrorBody = { error?: string; code?: string; details?: Record<string, string> };
 
 async function getCsrfToken(): Promise<string> {
   if (csrfToken) return csrfToken;
@@ -45,8 +45,17 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (UNSAFE_METHODS.has(method)) headers.set(CSRF_HEADER, await getCsrfToken());
 
   let response: Response;
+  const send = () => fetch(`${API_URL}${path}`, { ...init, headers, credentials: "include" });
   try {
-    response = await fetch(`${API_URL}${path}`, { ...init, headers, credentials: "include" });
+    response = await send();
+    if (response.status === 403 && UNSAFE_METHODS.has(method)) {
+      const body = await response.clone().json().catch(() => null) as ApiErrorBody | null;
+      if (body?.code === "INVALID_CSRF_TOKEN") {
+        clearCsrfToken();
+        headers.set(CSRF_HEADER, await getCsrfToken());
+        response = await send();
+      }
+    }
   } catch {
     throw new Error(`Nie można połączyć się z backendem (${API_URL}).`);
   }
