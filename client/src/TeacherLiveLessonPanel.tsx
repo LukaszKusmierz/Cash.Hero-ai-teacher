@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import {
   AUTH_EXPIRED_EVENT, createRoom, createTeacherInvitation, createTeam, getAdminNotifications, getCurrentUser,
-  getDashboard, getRoomHistory, login, logout, registerTeacher, revokeTeacherInvitation,
+  getDashboard, getRoomHistory, getTeacherInvitations, login, logout, registerTeacher, revokeTeacherInvitation,
   type AdminNotification, type Dashboard, type HistoryAnalysis, type HistoryEvent, type Participant,
   type TeacherInvitation,
 } from "./api";
@@ -73,7 +73,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
             username,
             password,
             display_name: displayName,
-            email: email.trim() || undefined,
+            email: email.trim(),
             invitation_token: invitationToken.trim(),
           });
       onAuthenticated(user);
@@ -90,8 +90,9 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
       </div>
       {error && <Notice>{error}</Notice>}
       {mode === "register" && <Field label="Nazwa wyświetlana" value={displayName} onChange={setDisplayName} autoComplete="name" />}
-      {mode === "register" && <Field label="E-mail przypisany do zaproszenia (opcjonalnie)" value={email} onChange={setEmail} type="email" autoComplete="email" required={false} />}
+      {mode === "register" && <Field label="E-mail przypisany do zaproszenia" value={email} onChange={setEmail} type="email" autoComplete="email" />}
       {mode === "register" && <Field label="Jednorazowy kod zaproszenia" value={invitationToken} onChange={setInvitationToken} autoComplete="one-time-code" />}
+      {mode === "register" && <p className="mb-4 text-xs text-slate-500">Wklej kod z wiadomości e-mail i podaj adres, na który wysłano zaproszenie. Login musi być wolny, a e-mail nie może być przypisany do innego konta.</p>}
       <Field label="Login" value={username} onChange={setUsername} autoComplete="username" />
       <Field label="Hasło" value={password} onChange={setPassword} type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} />
       {mode === "login" && <label className="mb-4 flex items-center gap-2 text-sm text-slate-600">
@@ -166,10 +167,17 @@ function AdminPanel({ user, onLogout }: { user: AuthUser; onLogout: () => void }
     } finally { setBusy(false); }
   };
 
-  const copyToken = async () => {
+  const refreshInvitation = async () => {
     if (!invitation) return;
-    try { await navigator.clipboard.writeText(invitation.invitation_token); }
-    catch { setError("Nie udało się skopiować kodu."); }
+    setBusy(true); setError("");
+    try {
+      const invitations = await getTeacherInvitations();
+      const updated = invitations.find((item) => item.id === invitation.id);
+      if (!updated) throw new Error("Nie znaleziono zaproszenia.");
+      setInvitation(updated);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Nie udało się odświeżyć statusu zaproszenia.");
+    } finally { setBusy(false); }
   };
 
   return <div className="min-h-screen bg-slate-50">
@@ -177,17 +185,20 @@ function AdminPanel({ user, onLogout }: { user: AuthUser; onLogout: () => void }
     <main className="mx-auto grid max-w-6xl gap-6 px-4 py-8 md:px-8 lg:grid-cols-2">
       <section className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
         <h1 className="flex items-center gap-2 text-xl font-bold text-slate-900"><ShieldCheck className="text-indigo-600" />Zaproszenia nauczycieli</h1>
-        <p className="mt-2 text-sm text-slate-500">Kod zostanie pokazany tylko raz. Przekaż go nauczycielowi bez umieszczania w adresie URL.</p>
+        <p className="mt-2 text-sm text-slate-500">Jednorazowy kod zostanie wysłany na adres e-mail nauczyciela. Kod jest dostępny w wiadomości i nie jest wyświetlany w panelu.</p>
         {error && <div className="mt-4"><Notice>{error}</Notice></div>}
         <form onSubmit={createInvitation} className="mt-5">
-          <Field label="E-mail nauczyciela (opcjonalnie)" value={email} onChange={setEmail} type="email" autoComplete="email" required={false} />
+          <Field label="E-mail nauczyciela" value={email} onChange={setEmail} type="email" autoComplete="email" />
           <button disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 py-3 font-semibold text-white disabled:opacity-60">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Utwórz zaproszenie</button>
         </form>
         {invitation && <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
-          <p className="text-xs font-semibold uppercase text-amber-700">Kod jednorazowy</p>
-          <code className="mt-2 block break-all rounded-lg bg-white p-3 text-sm text-slate-800">{invitation.invitation_token}</code>
-          <p className="mt-2 text-xs text-slate-500">Ważny do {formatDate(invitation.expires_at)}{invitation.email ? ` · ${invitation.email}` : ""}</p>
-          <div className="mt-3 flex gap-2"><button type="button" onClick={copyToken} className="flex items-center gap-1 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-indigo-700"><Copy className="h-4 w-4" /> Kopiuj</button><button type="button" onClick={revokeInvitation} disabled={busy} className="flex items-center gap-1 rounded-lg bg-red-100 px-3 py-2 text-sm font-semibold text-red-700"><Trash2 className="h-4 w-4" /> Unieważnij</button></div>
+          <p className="text-xs font-semibold uppercase text-amber-700">Zaproszenie utworzone</p>
+          <p className="mt-2 break-all text-sm text-slate-800">Adresat: {invitation.email}</p>
+          <p className="mt-2 text-sm text-slate-700" role="status">Status wysyłki: {invitation.delivery_status === "SENT" ? "Wysłano wiadomość z kodem." : invitation.delivery_status === "PENDING" ? "Oczekuje na wysłanie wiadomości z kodem." : invitation.delivery_status === "FAILED" ? "Nie udało się wysłać wiadomości. Skontaktuj się z administratorem poczty." : "Brak potwierdzenia wysyłki."}</p>
+          <p className="mt-2 text-xs text-slate-500">Ważne do {formatDate(invitation.expires_at)}</p>
+          {invitation.used_at && <p className="mt-2 text-sm text-slate-700">Zaproszenie wykorzystane.</p>}
+          {invitation.revoked_at && <p className="mt-2 text-sm text-slate-700">Zaproszenie unieważnione.</p>}
+          <div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={refreshInvitation} disabled={busy} className="flex items-center gap-1 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-indigo-700 disabled:opacity-60"><RefreshCw className="h-4 w-4" /> Odśwież status</button><button type="button" onClick={revokeInvitation} disabled={busy || !!invitation.used_at || !!invitation.revoked_at} className="flex items-center gap-1 rounded-lg bg-red-100 px-3 py-2 text-sm font-semibold text-red-700 disabled:opacity-60"><Trash2 className="h-4 w-4" /> Unieważnij</button></div>
         </div>}
       </section>
       <section className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">

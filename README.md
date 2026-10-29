@@ -33,10 +33,15 @@ i historii gry; panel nie generuje uczestników ani wyników demonstracyjnych.
 
 Rejestracja nauczyciela wymaga jednorazowego kodu zaproszenia i korzysta z
 `POST /auth/teacher-invitations/accept`. Jeśli administrator przypisał zaproszenie
-do adresu e-mail, ten sam adres trzeba podać w formularzu rejestracji. Konto
+do adresu e-mail, ten sam adres trzeba podać w formularzu rejestracji. Adres e-mail
+jest wymagany przy tworzeniu zaproszenia i rejestracji. Login i e-mail muszą być
+wolne; odpowiedź HTTP 409 oznacza konflikt z istniejącym kontem. W takiej sytuacji
+należy zalogować się na istniejące konto nauczyciela, wybrać inny login lub
+skontaktować się z administratorem, jeśli e-mail jest już zajęty. Konto
 `ADMIN` otwiera w tym module panel tworzenia i unieważniania zaproszeń oraz listę
-powiadomień o utworzonych kontach nauczycieli. Surowy kod zaproszenia jest
-wyświetlany tylko bezpośrednio po utworzeniu i nie jest zapisywany w adresie URL.
+powiadomień o utworzonych kontach nauczycieli. Kod trafia wyłącznie do wiadomości
+e-mail; API nie zwraca go do panelu. Panel pokazuje adresata, termin ważności
+i status wysyłki, który można odświeżyć. Kod nie jest zapisywany w adresie URL.
 
 W produkcji panel i API muszą działać w tym samym kontekście site, np.
 `teacher.cashhero.pl` oraz `api.cashhero.pl`, albo API musi być wystawione przez

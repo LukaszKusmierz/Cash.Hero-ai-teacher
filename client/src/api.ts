@@ -9,6 +9,13 @@ let csrfTokenRequest: Promise<string> | null = null;
 
 type ApiErrorBody = { error?: string; code?: string; details?: Record<string, string> };
 
+class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 async function getCsrfToken(): Promise<string> {
   if (csrfToken) return csrfToken;
   if (!csrfTokenRequest) {
@@ -72,7 +79,7 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
         ? Object.entries(body.details).map(([field, value]) => `${field}: ${value}`).join(", ")
         : body.error || message;
     } catch { /* odpowiedź nie była JSON-em */ }
-    throw new Error(message);
+    throw new ApiError(message, response.status);
   }
   return text ? (JSON.parse(text) as T) : (undefined as T);
 }
@@ -112,15 +119,25 @@ export async function registerTeacher(payload: {
   username: string;
   password: string;
   display_name: string;
-  email?: string;
+  email: string;
   invitation_token: string;
 }) {
-  const user = await apiFetch<AuthUser>("/auth/teacher-invitations/accept", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-  clearCsrfToken();
-  return requireStaff(user);
+  try {
+    const user = await apiFetch<AuthUser>("/auth/teacher-invitations/accept", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    clearCsrfToken();
+    return requireStaff(user);
+  } catch (reason) {
+    if (reason instanceof ApiError && reason.status === 409) {
+      throw new ApiError(
+        "Nie można utworzyć konta: login lub adres e-mail jest już używany. Jeśli masz już konto nauczyciela, zaloguj się. W przeciwnym razie wybierz inny login; jeśli konflikt dotyczy e-maila, skontaktuj się z administratorem. Adres e-mail musi być zgodny z zaproszeniem.",
+        reason.status,
+      );
+    }
+    throw reason;
+  }
 }
 export function getCurrentUser() { return apiFetch<AuthUser>("/auth/me").then(requireStaff); }
 export async function logout() {
@@ -136,10 +153,13 @@ export function getRoomHistory(roomId: string) { return apiFetch<HistoryAnalysis
 
 export type TeacherInvitation = {
   id: string;
-  invitation_token: string;
-  email: string | null;
+  email: string;
   created_at: string;
   expires_at: string;
+  used_at: string | null;
+  revoked_at: string | null;
+  delivery_status: string;
+  delivery_updated_at: string | null;
 };
 
 export type AdminNotification = {
@@ -151,11 +171,15 @@ export type AdminNotification = {
   read_at: string | null;
 };
 
-export function createTeacherInvitation(email?: string) {
+export function createTeacherInvitation(email: string) {
   return apiFetch<TeacherInvitation>("/admin/teacher-invitations", {
     method: "POST",
-    body: JSON.stringify({ email: email?.trim() || null }),
+    body: JSON.stringify({ email: email.trim() }),
   });
+}
+
+export function getTeacherInvitations() {
+  return apiFetch<TeacherInvitation[]>("/admin/teacher-invitations");
 }
 
 export function revokeTeacherInvitation(invitationId: string) {
