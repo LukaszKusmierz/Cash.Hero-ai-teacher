@@ -4,7 +4,6 @@ const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:3000").replac
 export const AUTH_EXPIRED_EVENT = "cashhero:auth-expired";
 const CSRF_HEADER = "X-XSRF-TOKEN";
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
-let csrfToken: string | null = null;
 let csrfTokenRequest: Promise<string> | null = null;
 
 type ApiErrorBody = { error?: string; code?: string; details?: Record<string, string> };
@@ -17,14 +16,13 @@ class ApiError extends Error {
 }
 
 async function getCsrfToken(): Promise<string> {
-  if (csrfToken) return csrfToken;
+  // Fetch for each mutation: the backend can rotate its cookie after a response.
   if (!csrfTokenRequest) {
     csrfTokenRequest = fetch(`${API_URL}/auth/csrf`, { credentials: "include" })
       .then(async (response) => {
         if (!response.ok) throw new Error(`Nie można pobrać tokenu CSRF (${response.status}).`);
         const body = await response.json() as { token?: string };
         if (!body.token) throw new Error("Backend nie zwrócił tokenu CSRF.");
-        csrfToken = body.token;
         return body.token;
       })
       .finally(() => {
@@ -35,7 +33,7 @@ async function getCsrfToken(): Promise<string> {
 }
 
 function clearCsrfToken(): void {
-  csrfToken = null;
+  csrfTokenRequest = null;
 }
 
 function requireStaff(user: AuthUser): AuthUser {
@@ -45,7 +43,17 @@ function requireStaff(user: AuthUser): AuthUser {
   return user;
 }
 
-async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+// Keep token acquisition and its request together. Responses can rotate the cookie.
+// A rejected operation still releases the queue for the next request.
+let apiRequestQueue: Promise<void> = Promise.resolve();
+
+function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const pending = apiRequestQueue.then(() => performApiFetch<T>(path, init));
+  apiRequestQueue = pending.then(() => undefined, () => undefined);
+  return pending;
+}
+
+async function performApiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   const method = (init.method || "GET").toUpperCase();
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
