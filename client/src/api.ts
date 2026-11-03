@@ -1,6 +1,6 @@
 import type { AuthUser } from "./auth";
 
-const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:3000").replace(/\/$/, "");
+const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:8080").replace(/\/$/, "");
 export const AUTH_EXPIRED_EVENT = "cashhero:auth-expired";
 const CSRF_HEADER = "X-XSRF-TOKEN";
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
@@ -95,28 +95,47 @@ async function performApiFetch<T>(path: string, init: RequestInit = {}): Promise
 export type Room = { id: string; code: string; created_at: string; created_by_user_id?: string };
 export type Participant = { id: string; room_id: string; name: string; team_id: string | null; joined_at: string };
 export type Team = { id: string; room_id: string; name: string; score: number };
-export type HistorySummary = { total_events: number; first_day: number | null; last_day: number | null; runs_count: number };
-export type Dashboard = { room: Room; participants: Participant[]; teams: Team[]; history: HistorySummary };
-export type HistoryEvent = {
-  id: string;
-  participant_id: string | null;
+export type LessonStatus = "NO_DATA" | "UNKNOWN" | "IN_PROGRESS" | "COMPLETED" | "BANKRUPT";
+export type LessonParticipant = {
+  participant_id: string;
+  name: string;
+  team: Team | null;
   run_id: string | null;
-  player_name: string | null;
+  status: LessonStatus;
+  current_day: number | null;
+  total_days: number;
+  decision_count: number | null;
+  finances: number | null;
+  last_recorded_at: string | null;
+};
+export type Dashboard = {
+  room: Room;
+  participants: Participant[];
+  teams: Team[];
+  lesson: {
+    summary: { participant_count: number; completed_count: number; no_data_count: number };
+    participants: LessonParticipant[];
+    generated_at: string;
+  };
+};
+export type LessonEffect = {
+  metric: "finances" | "mental_health" | "physical_health" | "self_development";
+  before: number | null;
+  after: number | null;
+  delta: number | null;
+};
+export type LessonEvent = {
+  id: string;
+  run_id: string | null;
   day_number: number;
   event_type: string;
-  choice_key: string | null;
   choice_label: string;
-  choice_details: Record<string, unknown> | null;
-  effects: Record<string, unknown> | null;
-  state_after: Record<string, unknown> | null;
-  created_at: string;
+  sequence_number: number | null;
+  effects: LessonEffect[];
+  recorded_at: string;
 };
-export type HistoryAnalysis = {
-  total_events: number;
-  first_day: number | null;
-  last_day: number | null;
-  events: HistoryEvent[];
-};
+export type LessonEventPage = { run_id: string | null; events: LessonEvent[]; next_cursor: string | null };
+export type ParticipantLesson = { participant: LessonParticipant; recent_events: LessonEventPage };
 
 export async function login(payload: { username: string; password: string; remember_me?: boolean }) {
   const user = await apiFetch<AuthUser>("/auth/login", { method: "POST", body: JSON.stringify(payload) });
@@ -156,8 +175,21 @@ export function createRoom() { return apiFetch<Room>("/rooms", { method: "POST" 
 export function createTeam(payload: { room_id: string; name: string }) {
   return apiFetch<Team>("/teams", { method: "POST", body: JSON.stringify(payload) });
 }
-export function getDashboard(roomId: string) { return apiFetch<Dashboard>(`/teacher/rooms/${roomId}/dashboard`); }
-export function getRoomHistory(roomId: string) { return apiFetch<HistoryAnalysis>(`/rooms/${roomId}/history/analysis`); }
+export function getDashboard(roomId: string, signal?: AbortSignal) {
+  return apiFetch<Dashboard>(`/teacher/rooms/${roomId}/dashboard`, { signal });
+}
+
+export function getParticipantLesson(roomId: string, participantId: string, runId: string | null, signal?: AbortSignal) {
+  const query = runId ? `?run_id=${encodeURIComponent(runId)}` : "";
+  return apiFetch<ParticipantLesson>(`/teacher/rooms/${roomId}/participants/${participantId}/lesson${query}`, { signal });
+}
+
+export function getParticipantEvents(roomId: string, participantId: string, runId: string | null, cursor: string,
+                                     signal?: AbortSignal) {
+  const query = new URLSearchParams({ cursor });
+  if (runId) query.set("run_id", runId);
+  return apiFetch<LessonEventPage>(`/teacher/rooms/${roomId}/participants/${participantId}/events?${query}`, { signal });
+}
 
 export type TeacherInvitation = {
   id: string;

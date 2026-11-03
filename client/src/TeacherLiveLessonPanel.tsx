@@ -1,51 +1,47 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import {
   Activity, AlertCircle, ArrowLeft, BarChart3, Bell, Check, Clock, Copy, DoorOpen,
-  FileText, GraduationCap, Loader2, LogOut, Play, Plus, Radio, RefreshCw, ShieldCheck, Trash2, Users, Wallet,
+  GraduationCap, Loader2, LogOut, Play, Plus, Radio, RefreshCw, ShieldCheck, Trash2, Users, Wallet,
 } from "lucide-react";
 import {
   AUTH_EXPIRED_EVENT, createRoom, createTeacherInvitation, createTeam, getAdminNotifications, getCurrentUser,
-  getDashboard, getRoomHistory, getTeacherInvitations, login, logout, registerTeacher, revokeTeacherInvitation,
-  type AdminNotification, type Dashboard, type HistoryAnalysis, type HistoryEvent, type Participant,
+  getDashboard, getParticipantEvents, getParticipantLesson, getTeacherInvitations, login, logout, registerTeacher, revokeTeacherInvitation,
+  type AdminNotification, type Dashboard, type LessonEffect, type LessonEvent, type LessonParticipant,
+  type LessonStatus, type Participant, type ParticipantLesson,
   type TeacherInvitation,
 } from "./api";
 import { clearLegacyAuthStorage, type AuthUser } from "./auth";
 
 const ROOM_STORAGE_KEY = "cashhero_teacher_room";
-const POLL_INTERVAL = 4000;
+const POLL_INTERVAL = 10000;
+const FORTNIGHT_DAYS = 14;
+const CAREER_DAYS = 84;
 
 type Stage = "waiting" | "live" | "reports";
-type Student = Participant & {
-  day: number | null;
-  finances: number | null;
-  mentalHealth: number | null;
-  physicalHealth: number | null;
-  selfDevelopment: number | null;
-  events: HistoryEvent[];
+
+const statusLabels: Record<LessonStatus, string> = {
+  NO_DATA: "Brak danych",
+  UNKNOWN: "Status nieustalony",
+  IN_PROGRESS: "W trakcie",
+  COMPLETED: "Ukończono",
+  BANKRUPT: "Bankructwo",
 };
 
-function numberFrom(object: Record<string, unknown> | null, key: string): number | null {
-  const value = object?.[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
+const metricLabels: Record<LessonEffect["metric"], string> = {
+  finances: "Finanse",
+  mental_health: "Samopoczucie",
+  physical_health: "Zdrowie",
+  self_development: "Rozwój",
+};
 
-function buildStudents(dashboard: Dashboard, history: HistoryAnalysis | null): Student[] {
-  const events = history?.events ?? [];
-  return dashboard.participants.map((participant) => {
-    const participantEvents = events
-      .filter((event) => event.participant_id === participant.id || (!event.participant_id && event.player_name === participant.name))
-      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-    const latest = participantEvents[participantEvents.length - 1];
-    return {
-      ...participant,
-      day: numberFrom(latest?.state_after ?? null, "day") ?? latest?.day_number ?? null,
-      finances: numberFrom(latest?.state_after ?? null, "finances"),
-      mentalHealth: numberFrom(latest?.state_after ?? null, "mental_health"),
-      physicalHealth: numberFrom(latest?.state_after ?? null, "physical_health"),
-      selfDevelopment: numberFrom(latest?.state_after ?? null, "self_development"),
-      events: participantEvents,
-    };
-  });
+const money = new Intl.NumberFormat("pl-PL", { style: "currency", currency: "PLN" });
+const points = new Intl.NumberFormat("pl-PL", { maximumFractionDigits: 2 });
+
+function progress(day: number | null, totalDays: number) {
+  if (day == null) return "—";
+  return totalDays === CAREER_DAYS
+    ? `Okres ${Math.ceil(day / FORTNIGHT_DAYS)} z ${CAREER_DAYS / FORTNIGHT_DAYS}`
+    : `Dzień ${day} z ${totalDays}`;
 }
 
 function formatDate(value: string) {
@@ -284,32 +280,171 @@ function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; 
   return <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm"><div className="mb-2 text-indigo-600">{icon}</div><p className="text-xs text-slate-400">{label}</p><p className="font-mono text-xl font-bold text-slate-800">{value}</p></div>;
 }
 
-function StudentTable({ students, dashboard }: { students: Student[]; dashboard: Dashboard }) {
-  return <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm"><div className="overflow-x-auto"><table className="w-full text-left"><thead className="bg-slate-50 text-xs uppercase text-slate-400"><tr><th className="px-5 py-3">Uczeń</th><th className="px-5 py-3">Dzień</th><th className="px-5 py-3">Finanse</th><th className="px-5 py-3">Zdrowie psychiczne</th><th className="px-5 py-3">Decyzje</th></tr></thead><tbody className="divide-y divide-slate-100">{students.map((student) => <tr key={student.id}><td className="px-5 py-4"><p className="font-semibold text-slate-800">{student.name}</p><p className="text-xs text-slate-400">{dashboard.teams.find((team) => team.id === student.team_id)?.name || "Bez zespołu"}</p></td><td className="px-5 py-4 font-mono text-sm">{student.day ?? "—"}</td><td className={`px-5 py-4 font-mono text-sm font-semibold ${student.finances != null && student.finances < 0 ? "text-red-600" : "text-green-600"}`}>{student.finances == null ? "—" : `${student.finances} zł`}</td><td className="px-5 py-4 font-mono text-sm">{student.mentalHealth == null ? "—" : `${student.mentalHealth}%`}</td><td className="px-5 py-4 font-mono text-sm">{student.events.length}</td></tr>)}</tbody></table></div></div>;
+function StudentTable({ students, onReport }: { students: LessonParticipant[]; onReport: (student: LessonParticipant) => void }) {
+  return <div className="overflow-x-auto rounded-2xl border border-slate-100 bg-white shadow-sm">
+    <table className="w-full text-left">
+      <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>
+        {["Uczeń", "Status", "Postęp", "Finanse", "Decyzje", "Ostatni zapis", "Raport"].map(label =>
+          <th key={label} scope="col" className="px-5 py-3">{label}</th>)}
+      </tr></thead>
+      <tbody className="divide-y divide-slate-100">{students.map(student =>
+        <tr key={student.participant_id} className="text-sm">
+          <th scope="row" className="px-5 py-4"><p>{student.name}</p><p className="font-normal text-slate-500">{student.team?.name ?? "Bez zespołu"}</p></th>
+          <td className="px-5 py-4">{statusLabels[student.status]}</td>
+          <td className="px-5 py-4">{progress(student.current_day, student.total_days)}</td>
+          <td className={`px-5 py-4 font-mono ${student.finances != null && student.finances < 0 ? "text-red-700" : ""}`}>
+            {student.finances == null ? "—" : money.format(student.finances)}
+          </td>
+          <td className="px-5 py-4">{student.decision_count ?? "—"}</td>
+          <td className="px-5 py-4">{student.last_recorded_at ? formatDate(student.last_recorded_at) : "—"}</td>
+          <td className="px-5 py-4"><button onClick={() => onReport(student)} className="font-semibold text-indigo-700 hover:underline"
+            aria-label={`Raport ucznia ${student.name}`}>Otwórz</button></td>
+        </tr>)}</tbody>
+    </table>
+  </div>;
 }
 
-function LiveDashboard({ dashboard, history, error, onRefresh, onReports, onBack }: { dashboard: Dashboard; history: HistoryAnalysis | null; error: string; onRefresh: () => void; onReports: () => void; onBack: () => void }) {
-  const students = useMemo(() => buildStudents(dashboard, history), [dashboard, history]);
-  const withFinances = students.filter((student) => student.finances != null);
-  const average = withFinances.length ? Math.round(withFinances.reduce((sum, student) => sum + (student.finances ?? 0), 0) / withFinances.length) : null;
-  return <main className="mx-auto max-w-6xl px-4 py-7 md:px-8">
-    <div className="mb-6 flex flex-wrap items-center justify-between gap-4"><div><div className="flex items-center gap-2"><h1 className="text-2xl font-bold text-slate-900">Wyniki na żywo</h1><span className="flex items-center gap-1 rounded-full bg-red-50 px-2 py-1 text-xs font-bold uppercase text-red-600"><Radio className="h-3 w-3" />Live</span></div><p className="mt-1 text-sm text-slate-500">Pokój <span className="font-mono font-semibold">{dashboard.room.code}</span> · dane z backendu</p></div><div className="flex gap-2"><button onClick={onBack} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600">Poczekalnia</button><button onClick={onRefresh} className="rounded-lg border border-slate-200 p-2 text-slate-500"><RefreshCw className="h-4 w-4" /></button><button onClick={onReports} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Raport decyzji</button></div></div>
-    {error && <Notice>{error}</Notice>}
-    <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4"><Metric icon={<Users />} label="Uczestnicy" value={String(students.length)} /><Metric icon={<Wallet />} label="Średnie finanse" value={average == null ? "—" : `${average} zł`} /><Metric icon={<Activity />} label="Zapisane decyzje" value={String(history?.total_events ?? dashboard.history.total_events)} /><Metric icon={<Clock />} label="Ostatni dzień" value={String(history?.last_day ?? dashboard.history.last_day ?? "—")} /></div>
-    <StudentTable students={students} dashboard={dashboard} />
+function LiveDashboard({ dashboard, error, onRefresh, onReports, onBack }: {
+  dashboard: Dashboard; error: string; onRefresh: () => void; onReports: (student?: LessonParticipant) => void; onBack: () => void;
+}) {
+  const { participants, summary } = dashboard.lesson;
+  const balances = participants.flatMap(student => student.finances == null ? [] : [student.finances]);
+  const counts = participants.flatMap(student => student.decision_count == null ? [] : [student.decision_count]);
+  const average = balances.length ? balances.reduce((sum, value) => sum + value, 0) / balances.length : null;
+  const decisions = counts.length ? counts.reduce((sum, count) => sum + count, 0) : null;
+
+  return <main className="mx-auto max-w-7xl px-4 py-7 md:px-8">
+    <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+      <div><h1 className="text-2xl font-bold text-slate-900">Wyniki na żywo</h1>
+        <p className="mt-1 text-sm text-slate-500">Pokój <span className="font-mono font-semibold">{dashboard.room.code}</span>
+          {" · "}Dane z {formatDate(dashboard.lesson.generated_at)}</p></div>
+      <div className="flex gap-2">
+        <button onClick={onBack} className="rounded-lg border px-3 py-2 text-sm font-semibold">Poczekalnia</button>
+        <button onClick={onRefresh} aria-label="Odśwież" className="rounded-lg border p-2"><RefreshCw className="h-4 w-4" /></button>
+        <button onClick={() => onReports()} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Raport decyzji</button>
+      </div>
+    </div>
+    {error && <p role="alert" className="mb-4 text-sm text-red-700">{error}</p>}
+    <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-5">
+      <Metric icon={<Users />} label="Uczestnicy" value={String(summary.participant_count)} />
+      <Metric icon={<Check />} label="Ukończone próby" value={String(summary.completed_count)} />
+      <Metric icon={<Clock />} label="Brak danych" value={String(summary.no_data_count)} />
+      <Metric icon={<Wallet />} label="Średnie finanse" value={average == null ? "—" : money.format(average)} />
+      <Metric icon={<Activity />} label="Zapisane decyzje" value={decisions == null ? "—" : String(decisions)} />
+    </div>
+    <StudentTable students={participants} onReport={onReports} />
   </main>;
 }
 
-function Reports({ dashboard, history, onBack }: { dashboard: Dashboard; history: HistoryAnalysis | null; onBack: () => void }) {
-  const students = buildStudents(dashboard, history);
-  return <main className="mx-auto max-w-6xl px-4 py-7 md:px-8"><button onClick={onBack} className="mb-5 flex items-center gap-2 text-sm font-semibold text-slate-500"><ArrowLeft className="h-4 w-4" />Powrót do podglądu</button><div className="mb-6"><h1 className="flex items-center gap-2 text-2xl font-bold text-slate-900"><BarChart3 className="text-indigo-600" />Historia decyzji</h1><p className="mt-1 text-sm text-slate-500">{history?.total_events ?? 0} zdarzeń zapisanych dla pokoju {dashboard.room.code}</p></div><div className="space-y-5">{students.map((student) => <section key={student.id} className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm"><h2 className="mb-3 flex items-center gap-2 font-bold text-slate-800"><FileText className="h-4 w-4 text-indigo-600" />{student.name}<span className="font-normal text-slate-400">({student.events.length})</span></h2>{student.events.length === 0 ? <p className="text-sm text-slate-400">Brak zapisanych decyzji.</p> : <ol className="space-y-2">{student.events.map((event) => <li key={event.id} className="rounded-xl bg-slate-50 px-4 py-3"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-semibold text-slate-800">Dzień {event.day_number}: {event.choice_label}</p><time className="text-xs text-slate-400">{formatDate(event.created_at)}</time></div>{typeof event.choice_details?.impact === "string" && <p className="mt-1 text-xs text-slate-500">{event.choice_details.impact}</p>}</li>)}</ol>}</section>)}</div></main>;
+function eventLabel(event: LessonEvent) {
+  switch (event.event_type) {
+    case "run_started": return "Start próby";
+    case "decision": return "Decyzja";
+    case "state_updated": return "Aktualizacja stanu";
+    case "run_finished": return "Koniec próby";
+    default: return "Zdarzenie";
+  }
+}
+
+function EventRow({ event, totalDays }: { event: LessonEvent; totalDays: number }) {
+  return <li className="rounded-xl bg-slate-50 px-4 py-3">
+    <div className="flex flex-wrap justify-between gap-2">
+      <p className="text-sm font-semibold">{eventLabel(event)} · {progress(event.day_number, totalDays)} · {event.choice_label}</p>
+      <time dateTime={event.recorded_at} className="text-xs text-slate-500">{formatDate(event.recorded_at)}</time>
+    </div>
+    {event.effects.length > 0 && <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-600">
+      {event.effects.map(({ metric, before, after, delta }) => {
+        const formatter = metric === "finances" ? money : points;
+        const value = (amount: number | null) => amount == null ? "—" : formatter.format(amount);
+        return <li key={metric}>{metricLabels[metric]}: {value(before)} → {value(after)}
+          {delta != null && ` (${delta > 0 ? "+" : ""}${value(delta)})`}</li>;
+      })}
+    </ul>}
+  </li>;
+}
+
+function StudentReport({ roomId, student }: { roomId: string; student: LessonParticipant }) {
+  const [report, setReport] = useState<ParticipantLesson | null>(null);
+  const [busy, setBusy] = useState(true);
+  const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
+  const request = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    request.current = controller;
+    setBusy(true);
+    setError("");
+    void getParticipantLesson(roomId, student.participant_id, student.run_id, controller.signal)
+      .then(result => { if (!controller.signal.aborted) setReport(result); })
+      .catch(reason => { if (!controller.signal.aborted) setError(reason.message); })
+      .finally(() => { if (!controller.signal.aborted) setBusy(false); });
+    return () => request.current?.abort();
+  }, [roomId, student.participant_id, student.run_id, attempt]);
+
+  async function loadMore() {
+    const page = report?.recent_events;
+    if (!page?.next_cursor || busy) return;
+    const controller = new AbortController();
+    request.current = controller;
+    setBusy(true);
+    setError("");
+    try {
+      const next = await getParticipantEvents(roomId, student.participant_id, page.run_id, page.next_cursor, controller.signal);
+      if (!controller.signal.aborted) {
+        setReport(current => current && ({ ...current, recent_events: { ...next, events: [...page.events, ...next.events] } }));
+      }
+    } catch (reason) {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Nie udało się pobrać zdarzeń.");
+    } finally {
+      if (!controller.signal.aborted) setBusy(false);
+    }
+  }
+
+  const participant = report?.participant ?? student;
+  return <section className="mt-5 rounded-2xl border border-slate-100 bg-white p-5 shadow-sm" aria-busy={busy}>
+    <h2 className="font-semibold">{participant.name}</h2>
+    <p className="mb-4 text-sm text-slate-600">{statusLabels[participant.status]} · {progress(participant.current_day, participant.total_days)}
+      {" · "}Decyzje: {participant.decision_count ?? "—"}</p>
+    {error && <p role="alert" className="mb-3 text-sm text-red-700">{error}</p>}
+    {!report && error && <button onClick={() => setAttempt(attempt + 1)} className="font-semibold text-indigo-700">Spróbuj ponownie</button>}
+    {report && (report.recent_events.events.length
+      ? <ol className="space-y-2">{report.recent_events.events.map(event =>
+        <EventRow key={event.id} event={event} totalDays={participant.total_days} />)}</ol>
+      : <p className="text-sm text-slate-500">Brak zapisanych zdarzeń.</p>)}
+    {busy && <p role="status" className="mt-3 text-sm text-slate-600">Pobieranie zdarzeń…</p>}
+    {report?.recent_events.next_cursor && <button onClick={() => void loadMore()} disabled={busy}
+      className="mt-4 rounded-lg border px-4 py-2 text-sm font-semibold text-indigo-700 disabled:opacity-50">Wczytaj starsze zdarzenia</button>}
+  </section>;
+}
+
+function Reports({ dashboard, student, onSelect, onBack }: {
+  dashboard: Dashboard; student: LessonParticipant | null; onSelect: (student: LessonParticipant | null) => void; onBack: () => void;
+}) {
+  return <main className="mx-auto max-w-6xl px-4 py-7 md:px-8">
+    <button onClick={onBack} className="mb-5 flex items-center gap-2 text-sm font-semibold text-slate-500">
+      <ArrowLeft className="h-4 w-4" />Powrót do podglądu
+    </button>
+    <h1 className="flex items-center gap-2 text-2xl font-bold"><BarChart3 className="text-indigo-600" />Historia decyzji</h1>
+    <label className="mt-4 flex flex-wrap items-center gap-2 text-sm">
+      Uczeń
+      <select value={student?.participant_id ?? ""} onChange={event =>
+        onSelect(dashboard.lesson.participants.find(item => item.participant_id === event.target.value) ?? null)}
+        className="rounded-lg border bg-white px-3 py-2">
+        <option value="">Wybierz ucznia</option>
+        {dashboard.lesson.participants.map(item => <option key={item.participant_id} value={item.participant_id}>{item.name}</option>)}
+      </select>
+    </label>
+    {student && <StudentReport key={`${student.participant_id}:${student.run_id}`} roomId={dashboard.room.id} student={student} />}
+  </main>;
 }
 
 export default function TeacherLiveLessonPanel() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
-  const [history, setHistory] = useState<HistoryAnalysis | null>(null);
+  const [reportStudent, setReportStudent] = useState<LessonParticipant | null>(null);
+  const dashboardRequest = useRef<AbortController | null>(null);
   const [stage, setStage] = useState<Stage>("waiting");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -326,9 +461,12 @@ export default function TeacherLiveLessonPanel() {
 
   useEffect(() => {
     const handleAuthExpired = () => {
+      dashboardRequest.current?.abort();
+      dashboardRequest.current = null;
+      setBusy(false);
       setUser(null);
       setDashboard(null);
-      setHistory(null);
+      setReportStudent(null);
       setStage("waiting");
     };
     window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
@@ -337,27 +475,55 @@ export default function TeacherLiveLessonPanel() {
 
   const refresh = useCallback(async (quiet = false) => {
     const roomId = localStorage.getItem(ROOM_STORAGE_KEY);
-    if (!roomId || user?.role !== "TEACHER") return;
+    if (!roomId || user?.role !== "TEACHER" || dashboardRequest.current) return;
+    const controller = new AbortController();
+    dashboardRequest.current = controller;
     if (!quiet) setBusy(true);
     try {
-      const [nextDashboard, nextHistory] = await Promise.all([getDashboard(roomId), getRoomHistory(roomId)]);
-      setDashboard(nextDashboard); setHistory(nextHistory); setError("");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Nie udało się odświeżyć danych pokoju."); }
-    finally { if (!quiet) setBusy(false); }
+      const nextDashboard = await getDashboard(roomId, controller.signal);
+      if (!controller.signal.aborted && localStorage.getItem(ROOM_STORAGE_KEY) === roomId) {
+        setDashboard(nextDashboard);
+        setError("");
+      }
+    } catch (reason) {
+      if (!controller.signal.aborted && localStorage.getItem(ROOM_STORAGE_KEY) === roomId) {
+        setError(reason instanceof Error ? reason.message : "Nie udało się odświeżyć danych pokoju.");
+      }
+    } finally {
+      if (dashboardRequest.current === controller) dashboardRequest.current = null;
+      if (!quiet && !controller.signal.aborted) setBusy(false);
+    }
   }, [user]);
 
   useEffect(() => { if (user?.role === "TEACHER") void refresh(); }, [user, refresh]);
+  const roomId = dashboard?.room.id;
   useEffect(() => {
-    if (!user || !dashboard || stage === "reports") return;
-    const interval = window.setInterval(() => void refresh(true), POLL_INTERVAL);
-    return () => window.clearInterval(interval);
-  }, [user, dashboard, stage, refresh]);
+    if (!roomId || user?.role !== "TEACHER" || stage === "reports") return;
+    const refreshVisible = () => { if (!document.hidden) void refresh(true); };
+    const interval = window.setInterval(refreshVisible, POLL_INTERVAL);
+    document.addEventListener("visibilitychange", refreshVisible);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshVisible);
+    };
+  }, [user, roomId, stage, refresh]);
 
   const handleCreate = async () => {
-    setBusy(true); setError("");
-    try { const room = await createRoom(); localStorage.setItem(ROOM_STORAGE_KEY, room.id); const next = await getDashboard(room.id); setDashboard(next); setHistory(null); setStage("waiting"); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Nie udało się utworzyć pokoju."); }
-    finally { setBusy(false); }
+    dashboardRequest.current?.abort();
+    dashboardRequest.current = null;
+    setBusy(true);
+    setError("");
+    try {
+      const room = await createRoom();
+      localStorage.setItem(ROOM_STORAGE_KEY, room.id);
+      await refresh();
+      setReportStudent(null);
+      setStage("waiting");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Nie udało się utworzyć pokoju.");
+    } finally {
+      setBusy(false);
+    }
   };
   const handleCreateTeam = async (name: string) => {
     if (!dashboard) return;
@@ -368,19 +534,44 @@ export default function TeacherLiveLessonPanel() {
     setError("");
     try {
       await logout();
+      dashboardRequest.current?.abort();
+      dashboardRequest.current = null;
       localStorage.removeItem(ROOM_STORAGE_KEY);
       setUser(null);
       setDashboard(null);
-      setHistory(null);
+      setReportStudent(null);
       setStage("waiting");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Nie udało się wylogować.");
     }
   };
-  const handleNewRoom = () => { localStorage.removeItem(ROOM_STORAGE_KEY); setDashboard(null); setHistory(null); setStage("waiting"); setError(""); };
+  const handleNewRoom = () => {
+    dashboardRequest.current?.abort();
+    dashboardRequest.current = null;
+    localStorage.removeItem(ROOM_STORAGE_KEY);
+    setDashboard(null);
+    setReportStudent(null);
+    setStage("waiting");
+    setError("");
+  };
+
+  const openReports = (student?: LessonParticipant) => {
+    setReportStudent(student ?? null);
+    setStage("reports");
+  };
 
   if (!authReady) return <div className="flex min-h-screen items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-indigo-600" /></div>;
   if (!user) return <AuthScreen onAuthenticated={(next) => { setUser(next); setAuthReady(true); }} />;
   if (user.role === "ADMIN") return <AdminPanel user={user} onLogout={handleLogout} />;
-  return <div className="min-h-screen bg-slate-50"><Header user={user} onLogout={handleLogout} />{!dashboard ? <NoRoom onCreate={handleCreate} busy={busy} error={error} /> : stage === "waiting" ? <WaitingRoom dashboard={dashboard} error={error} refreshing={busy} onRefresh={() => void refresh()} onStart={() => setStage("live")} onNewRoom={handleNewRoom} onCreateTeam={handleCreateTeam} /> : stage === "live" ? <LiveDashboard dashboard={dashboard} history={history} error={error} onRefresh={() => void refresh()} onReports={() => setStage("reports")} onBack={() => setStage("waiting")} /> : <Reports dashboard={dashboard} history={history} onBack={() => setStage("live")} />}</div>;
+
+  return <div className="min-h-screen bg-slate-50">
+    <Header user={user} onLogout={handleLogout} />
+    {!dashboard ? <NoRoom onCreate={handleCreate} busy={busy} error={error} />
+      : stage === "waiting" ? <WaitingRoom dashboard={dashboard} error={error} refreshing={busy}
+        onRefresh={() => void refresh()} onStart={() => setStage("live")} onNewRoom={handleNewRoom} onCreateTeam={handleCreateTeam} />
+      : stage === "live" ? <LiveDashboard dashboard={dashboard} error={error} onRefresh={() => void refresh()}
+        onReports={openReports} onBack={() => setStage("waiting")} />
+      : <Reports dashboard={dashboard} student={reportStudent} onSelect={setReportStudent}
+        onBack={() => { setStage("live"); void refresh(true); }} />}
+  </div>;
 }

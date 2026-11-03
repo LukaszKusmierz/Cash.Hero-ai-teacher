@@ -17,19 +17,23 @@ npm run dev
 ```
 
 Uruchomi to jednocześnie serwer Express (port 3002) i Vite dev server (port 5173).
-Port 3001 jest zarezerwowany dla lokalnej aplikacji ucznia (`Cash.Hero-ai`), dzięki
-czemu oba frontendy mogą działać równocześnie bez konfliktu adresów.
-Panel łączy się bezpośrednio z backendem Java. Skopiuj `client/.env.example`
-do `client/.env` i ustaw `VITE_API_URL` na adres backendu (lokalnie domyślnie
-`http://localhost:3000`). Origin panelu musi znajdować się w
-`APP_CORS_ALLOWED_ORIGINS` backendu.
+Port 3001 jest zarezerwowany dla aplikacji ucznia z sąsiedniego repozytorium
+`Cash.Hero` na gałęzi `new_way_lk`. Zainstaluj w nim zależności przed uruchomieniem
+`npm run dev` panelu. Obie aplikacje korzystają z `CH-teacher_module_java/develop`.
+Ustaw w obu `VITE_API_URL` na ten sam adres backendu (domyślnie
+`http://localhost:8080`). Dodaj oba originy do `APP_CORS_ALLOWED_ORIGINS`
+i używaj hosta `localhost`. Do równoległego logowania ucznia i nauczyciela
+użyj osobnych profili lub kontekstów przeglądarki.
 
 Panel korzysta z tego samego formatu sesji i kont co główny frontend Cash Hero.
 Autoryzacja opiera się na bezpiecznym cookie `__Host-session`; panel nie zapisuje
 tokenu sesyjnego w `localStorage`. Żądania zmieniające stan automatycznie pobierają
 token z `GET /auth/csrf` i wysyłają go w nagłówku `X-XSRF-TOKEN` razem z cookies.
-Obsługiwane dane lekcji pochodzą z endpointów pokojów, dashboardu nauczyciela
-i historii gry; panel nie generuje uczestników ani wyników demonstracyjnych.
+Podgląd odświeża dashboard lekcji, gdy karta jest widoczna. Raport ucznia
+otwiera konkretną próbę i pobiera starsze zdarzenia stronami. Nowy scenariusz
+84-dniowy pokazuje sześć okresów. Starsze próby zachowują postęp w dniach.
+Przejście z poczekalni do podglądu zmienia widok nauczyciela. Uczeń rozpoczyna
+próbę po wybraniu postaci i mieszkania.
 
 Rejestracja nauczyciela wymaga jednorazowego kodu zaproszenia i korzysta z
 `POST /auth/teacher-invitations/accept`. Jeśli administrator przypisał zaproszenie
